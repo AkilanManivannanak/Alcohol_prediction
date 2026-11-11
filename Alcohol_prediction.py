@@ -99,8 +99,10 @@ def load_and_preprocess_data(target='Alcohol'):
     df = enhanced_feature_engineering(df)
     df['Personality_Score'] = df[['Nscore', 'Escore', 'Oscore', 'Ascore', 'Cscore']].mean(axis=1)
     df['Risk_Score'] = df['Impulsive'] * df['SS']
-    df['Age_Group'] = pd.cut(df['Age'], bins=[18,25,35,50,100],
-                            labels=['18-25','26-35','36-50','50+'])
+    # Age in this dataset is already a quantified code (about -0.95 to 2.59, one value per age
+    # band), not years, so cutting at 18/25/35/50 put every row in NaN. Rank the codes instead:
+    # 0 = 18-24, 1 = 25-34, 2 = 35-44, 3 = 45-54, 4 = 55-64, 5 = 65+.
+    df['Age_Group'] = df['Age'].round(4).rank(method='dense').astype(int) - 1
 
     # Encode categorical features
     categorical_cols = ['Gender', 'Education', 'Country', 'Ethnicity', 'Age_Group']
