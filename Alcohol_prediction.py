@@ -278,6 +278,19 @@ def train_neural_network(X_train, y_train, class_dist):
     return model, history
 
 # ==================== ENHANCED EVALUATION ====================
+def predict_proba_any(model, X, model_type):
+    """Positive-class probabilities for the sklearn/XGBoost models and the Keras network."""
+    if model_type in ('xgb', 'dt'):
+        return model.predict_proba(X)[:, 1].astype(float)
+    return model.predict(X, verbose=0).flatten().astype(float)
+
+
+def choose_threshold(model, X_val, y_val, model_type):
+    """Youden's J threshold chosen on the VALIDATION split, so the test set stays untouched."""
+    fpr, tpr, thresholds = roc_curve(y_val, predict_proba_any(model, X_val, model_type))
+    return float(thresholds[np.argmax(tpr - fpr)])
+
+
 def evaluate_model(model, X_test, y_test, model_type, threshold=None):
     """Comprehensive model evaluation with optimal threshold finding"""
     if model_type == 'xgb':
@@ -290,7 +303,9 @@ def evaluate_model(model, X_test, y_test, model_type, threshold=None):
     # Convert probabilities to Python native float type
     y_proba = y_proba.astype(float)
 
-    # Find optimal threshold using Youden's J statistic
+    # Find optimal threshold using Youden's J statistic.
+    # Note: when no threshold is passed this tunes on the evaluation data itself (optimistic);
+    # the main script passes a threshold chosen on the validation split instead.
     if threshold is None:
         fpr, tpr, thresholds = roc_curve(y_test, y_proba)
         j_scores = tpr - fpr
@@ -428,8 +443,16 @@ if __name__ == "__main__":
         stratify=y
     )
 
-    # Fit scaling + feature selection on the training split only, then apply to test
-    X_train, (X_test,), feature_names = fit_feature_pipeline(X_train, y_train, [X_test], class_dist)
+    # Hold out part of the training data (before resampling) to choose decision thresholds
+    X_train, X_val, y_train, y_val = train_test_split(
+        X_train, y_train,
+        test_size=0.2,
+        random_state=SEED,
+        stratify=y_train
+    )
+
+    # Fit scaling + feature selection on the training split only, then apply to val and test
+    X_train, (X_val, X_test), feature_names = fit_feature_pipeline(X_train, y_train, [X_val, X_test], class_dist)
 
     # Robust resampling with fallback
     print("\nBalancing classes with resampling...")
@@ -448,10 +471,12 @@ if __name__ == "__main__":
     xgb_model = train_xgboost(X_train, y_train, class_dist)
     nn_model, history = train_neural_network(X_train, y_train, class_dist)
 
-    # Evaluate all models
-    y_pred_dt, y_proba_dt, dt_metrics = evaluate_model(dt_model, X_test, y_test, 'dt')
-    y_pred_xgb, y_proba_xgb, xgb_metrics = evaluate_model(xgb_model, X_test, y_test, 'xgb')
-    y_pred_nn, y_proba_nn, nn_metrics = evaluate_model(nn_model, X_test, y_test, 'nn')
+    # Evaluate all models on the test set, with thresholds chosen on the validation split
+    thr = {name: choose_threshold(m, X_val, y_val, name)
+           for name, m in (('dt', dt_model), ('xgb', xgb_model), ('nn', nn_model))}
+    y_pred_dt, y_proba_dt, dt_metrics = evaluate_model(dt_model, X_test, y_test, 'dt', threshold=thr['dt'])
+    y_pred_xgb, y_proba_xgb, xgb_metrics = evaluate_model(xgb_model, X_test, y_test, 'xgb', threshold=thr['xgb'])
+    y_pred_nn, y_proba_nn, nn_metrics = evaluate_model(nn_model, X_test, y_test, 'nn', threshold=thr['nn'])
 
     # Plot confusion matrices
     plot_enhanced_confusion_matrix(y_test, y_pred_dt, 'dt')
