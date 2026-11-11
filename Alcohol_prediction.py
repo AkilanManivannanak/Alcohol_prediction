@@ -127,13 +127,24 @@ def prepare_features(df, target='Alcohol', drug_columns=None):
     class_dist = y.value_counts(normalize=True)
     print(class_dist)
 
-    # Robust scaling for numerical features
-    numerical_cols = X.select_dtypes(include=np.number).columns
-    scaler = StandardScaler()
-    X[numerical_cols] = scaler.fit_transform(X[numerical_cols])
+    # Scaling and feature selection are fitted later on the TRAINING split only
+    # (see fit_feature_pipeline); fitting them here on all rows leaked test data.
+    return X, y, class_dist
 
-    # Feature selection with XGBoost (more stable implementation)
-    print("\nPerforming feature selection...")
+
+def fit_feature_pipeline(X_train, y_train, X_other_sets, class_dist):
+    """Fit the scaler and XGBoost feature selector on the training split, then apply to the other splits."""
+    X_train = X_train.copy()
+    numerical_cols = X_train.select_dtypes(include=np.number).columns
+    scaler = StandardScaler()
+    X_train[numerical_cols] = scaler.fit_transform(X_train[numerical_cols])
+    transformed = []
+    for X_o in X_other_sets:
+        X_o = X_o.copy()
+        X_o[numerical_cols] = scaler.transform(X_o[numerical_cols])
+        transformed.append(X_o)
+
+    print("\nPerforming feature selection (training split only)...")
     selector = SelectFromModel(
         XGBClassifier(
             scale_pos_weight=class_dist[1]/class_dist[0],
@@ -142,11 +153,11 @@ def prepare_features(df, target='Alcohol', drug_columns=None):
         ),
         threshold='median'
     )
-    X_selected = selector.fit_transform(X, y)
-    selected_features = selector.get_support()
-    selected_feature_names = X.columns[selected_features]
-
-    return X_selected, y, (scaler, selector), selected_feature_names, class_dist
+    X_train_sel = selector.fit_transform(X_train, y_train)
+    selected_feature_names = X_train.columns[selector.get_support()]
+    others_sel = [selector.transform(X_o) for X_o in transformed]
+    joblib.dump((scaler, selector), 'models/feature_pipeline.pkl')
+    return X_train_sel, others_sel, selected_feature_names
 
 # ==================== IMPROVED MODEL TRAINING ====================
 def train_decision_tree(X_train, y_train):
@@ -407,7 +418,7 @@ def explain_model(model, X_test, model_type, feature_names):
 if __name__ == "__main__":
     # Load and preprocess data
     df, drug_columns = load_and_preprocess_data()
-    X, y, feature_pipeline, feature_names, class_dist = prepare_features(df)
+    X, y, class_dist = prepare_features(df)
 
     # Split data with stratification
     X_train, X_test, y_train, y_test = train_test_split(
@@ -416,6 +427,9 @@ if __name__ == "__main__":
         random_state=SEED,
         stratify=y
     )
+
+    # Fit scaling + feature selection on the training split only, then apply to test
+    X_train, (X_test,), feature_names = fit_feature_pipeline(X_train, y_train, [X_test], class_dist)
 
     # Robust resampling with fallback
     print("\nBalancing classes with resampling...")
