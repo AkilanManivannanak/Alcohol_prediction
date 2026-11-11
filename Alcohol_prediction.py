@@ -147,7 +147,7 @@ def fit_feature_pipeline(X_train, y_train, X_other_sets, class_dist):
     print("\nPerforming feature selection (training split only)...")
     selector = SelectFromModel(
         XGBClassifier(
-            scale_pos_weight=class_dist[1]/class_dist[0],
+            scale_pos_weight=class_dist[0]/class_dist[1],  # negatives / positives (XGBoost convention)
             random_state=SEED,
             eval_metric='aucpr'
         ),
@@ -192,7 +192,8 @@ def train_xgboost(X_train, y_train, class_dist):
 
     # Expanded parameter grid with more options
     params = {
-        'scale_pos_weight': [class_dist[1]/class_dist[0]],
+        # negatives / positives of the data actually trained on (about 1 after SMOTE)
+        'scale_pos_weight': [float((y_train == 0).sum() / (y_train == 1).sum())],
         'max_depth': [3, 5, 7, 9],
         'learning_rate': [0.001, 0.01, 0.1],
         'subsample': [0.6, 0.8, 1.0],
